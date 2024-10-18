@@ -254,6 +254,7 @@ CURLcode Curl_ssl_set_sessionid(struct Curl_cfilter *cf,
 #include "gtls.h"           /* GnuTLS versions */
 #include "wolfssl.h"        /* wolfSSL versions */
 #include "schannel.h"       /* Schannel SSPI version */
+#include "applenw.h"        /* Network (Apple) version */
 #include "sectransp.h"      /* Secure Transport (Darwin) version */
 #include "mbedtls.h"        /* mbedTLS versions */
 #include "bearssl.h"        /* BearSSL versions */

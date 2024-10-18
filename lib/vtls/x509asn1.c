@@ -26,14 +26,14 @@
 
 #if defined(USE_GNUTLS) || defined(USE_WOLFSSL) ||      \
   defined(USE_SCHANNEL) || defined(USE_SECTRANSP) ||    \
-  defined(USE_MBEDTLS)
+  defined(USE_MBEDTLS) || defined(USE_APPLENW)
 
 #if defined(USE_WOLFSSL) || defined(USE_SCHANNEL)
 #define WANT_PARSEX509 /* uses Curl_parseX509() */
 #endif
 
 #if defined(USE_GNUTLS) || defined(USE_SCHANNEL) || defined(USE_SECTRANSP) || \
-  defined(USE_MBEDTLS)
+  defined(USE_MBEDTLS) || defined(USE_APPLENW)
 #define WANT_EXTRACT_CERTINFO /* uses Curl_extract_certinfo() */
 #define WANT_PARSEX509 /* ... uses Curl_parseX509() */
 #endif

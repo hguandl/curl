@@ -1379,6 +1379,8 @@ const struct Curl_ssl *Curl_ssl =
   &Curl_ssl_rustls;
 #elif defined(USE_OPENSSL)
   &Curl_ssl_openssl;
+#elif defined(USE_APPLENW)
+  &Curl_ssl_applenw;
 #elif defined(USE_SECTRANSP)
   &Curl_ssl_sectransp;
 #elif defined(USE_SCHANNEL)
@@ -1401,6 +1403,9 @@ static const struct Curl_ssl *available_backends[] = {
 #endif
 #if defined(USE_OPENSSL)
   &Curl_ssl_openssl,
+#endif
+#if defined(USE_APPLENW)
+  &Curl_ssl_applenw,
 #endif
 #if defined(USE_SECTRANSP)
   &Curl_ssl_sectransp,

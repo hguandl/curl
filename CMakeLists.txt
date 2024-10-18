@@ -502,6 +502,7 @@ if(CURL_DEFAULT_SSL_BACKEND)
 endif()
 
 if(APPLE)
+  cmake_dependent_option(CURL_USE_APPLENW "Enable Apple OS native SSL/TLS (Network)" OFF CURL_ENABLE_SSL OFF)
   cmake_dependent_option(CURL_USE_SECTRANSP "Enable Apple OS native SSL/TLS (Secure Transport)" OFF CURL_ENABLE_SSL OFF)
 endif()
 if(WIN32)
@@ -515,6 +516,7 @@ cmake_dependent_option(CURL_USE_GNUTLS "Enable GnuTLS for SSL/TLS" OFF CURL_ENAB
 cmake_dependent_option(CURL_USE_RUSTLS "Enable Rustls for SSL/TLS" OFF CURL_ENABLE_SSL OFF)
 
 if(WIN32 OR
+   CURL_USE_APPLENW OR
    CURL_USE_SECTRANSP OR
    CURL_USE_SCHANNEL OR
    CURL_USE_MBEDTLS OR
@@ -536,6 +538,7 @@ option(CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG "Disable automatic loading of OpenS
 
 count_true(_enabled_ssl_options_count
   CURL_USE_SCHANNEL
+  CURL_USE_APPLENW
   CURL_USE_SECTRANSP
   CURL_USE_OPENSSL
   CURL_USE_MBEDTLS
@@ -563,24 +566,49 @@ if(CURL_WINDOWS_SSPI)
   set(USE_WINDOWS_SSPI ON)
 endif()
 
-if(CURL_USE_SECTRANSP)
+if(CURL_USE_APPLENW)
   set(_use_core_foundation_and_core_services ON)
+  set(_use_apple_security ON)
 
-  find_library(SECURITY_FRAMEWORK "Security")
-  mark_as_advanced(SECURITY_FRAMEWORK)
-  if(NOT SECURITY_FRAMEWORK)
-    message(FATAL_ERROR "Security framework not found")
+  find_library(NETWORK_FRAMEWORK "Network")
+  mark_as_advanced(NETWORK_FRAMEWORK)
+
+  if(NOT NETWORK_FRAMEWORK)
+    message(FATAL_ERROR "Network framework not found")
   endif()
 
   set(_ssl_enabled ON)
+  set(USE_APPLENW ON)
+  list(APPEND CURL_LIBS "-framework Network")
+
+  if(CURL_DEFAULT_SSL_BACKEND AND CURL_DEFAULT_SSL_BACKEND STREQUAL "apple-network")
+    set(_valid_default_ssl_backend TRUE)
+  endif()
+endif()
+
+if(CURL_USE_SECTRANSP)
+  set(_use_core_foundation_and_core_services ON)
+  set(_use_apple_security ON)
+
+  set(_ssl_enabled ON)
   set(USE_SECTRANSP ON)
-  list(APPEND CURL_LIBS "-framework Security")
 
   if(CURL_DEFAULT_SSL_BACKEND AND CURL_DEFAULT_SSL_BACKEND STREQUAL "secure-transport")
     set(_valid_default_ssl_backend TRUE)
   endif()
 
   message(WARNING "Secure Transport does not support TLS 1.3.")
+endif()
+
+if(_use_apple_security)
+  find_library(SECURITY_FRAMEWORK "Security")
+  mark_as_advanced(SECURITY_FRAMEWORK)
+
+  if(NOT SECURITY_FRAMEWORK)
+    message(FATAL_ERROR "Security framework not found")
+  endif()
+
+  list(APPEND CURL_LIBS "-framework Security")
 endif()
 
 if(_use_core_foundation_and_core_services)
@@ -1895,6 +1923,7 @@ if(NOT CURL_DISABLE_NTLM AND
    (USE_OPENSSL OR
     USE_MBEDTLS OR
     USE_GNUTLS OR
+    USE_APPLENW OR
     USE_SECTRANSP OR
     USE_WIN32_CRYPTO OR
     (USE_WOLFSSL AND HAVE_WOLFSSL_DES_ECB_ENCRYPT)))
@@ -1975,7 +2004,7 @@ _add_if("HTTP3"         USE_NGTCP2 OR USE_QUICHE OR USE_MSH3 OR USE_OPENSSL_QUIC
 _add_if("MultiSSL"      CURL_WITH_MULTI_SSL)
 _add_if("HTTPS-proxy"   _ssl_enabled AND (USE_OPENSSL OR USE_GNUTLS
                         OR USE_SCHANNEL OR USE_RUSTLS OR USE_BEARSSL OR
-                        USE_MBEDTLS OR USE_SECTRANSP OR
+                        USE_MBEDTLS OR USE_SECTRANSP OR USE_APPLENW OR
                         (USE_WOLFSSL AND HAVE_WOLFSSL_FULL_BIO)))
 _add_if("Unicode"       ENABLE_UNICODE)
 _add_if("threadsafe"    HAVE_ATOMIC OR
@@ -2001,6 +2030,7 @@ unset(_items)
 _add_if("Schannel"         _ssl_enabled AND USE_SCHANNEL)
 _add_if("OpenSSL"          _ssl_enabled AND USE_OPENSSL AND OPENSSL_VERSION VERSION_LESS 3.0.0)
 _add_if("OpenSSL v3+"      _ssl_enabled AND USE_OPENSSL AND NOT OPENSSL_VERSION VERSION_LESS 3.0.0)
+_add_if("Apple Network"    _ssl_enabled AND USE_APPLENW)
 _add_if("Secure Transport" _ssl_enabled AND USE_SECTRANSP)
 _add_if("mbedTLS"          _ssl_enabled AND USE_MBEDTLS)
 _add_if("BearSSL"          _ssl_enabled AND USE_BEARSSL)

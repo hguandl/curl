@@ -161,6 +161,7 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
   struct ssl_connect_data *connssl = cf->ctx;
   struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
   struct ssl_primary_config *pri_config = Curl_ssl_cf_get_primary_config(cf);
+  struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
 
   *parameters = nw_parameters_create_secure_tcp(
     ^(nw_protocol_options_t tls_options) {
@@ -181,6 +182,23 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
 
       sec_protocol_options_set_tls_false_start_enabled(sec_options,
                                                        ssl_config->falsestart);
+
+      sec_protocol_options_set_verify_block(
+        sec_options,
+        ^(sec_protocol_metadata_t metadata, sec_trust_t trust_ref,
+          sec_protocol_verify_complete_t complete) {
+          SecTrustRef trust = sec_trust_copy_ref(trust_ref);
+
+          if(SecTrustEvaluateWithError(trust, NULL))
+            complete(false);
+          else {
+            failf(data, "Failed to verify peer certificate");
+            complete(!pri_config->verifypeer);
+          }
+
+          sec_release(trust);
+        },
+        backend->queue);
 
       nw_release(sec_options);
     },

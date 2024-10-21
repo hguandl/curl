@@ -40,11 +40,17 @@ static const unsigned char ecDsaSecp384r1SpkiHeader[] = {
   0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
   0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00};
 
-/* Allow legacy SSLProtocol to support macOS 10.14 / iOS 12 */
+/* Allow legacy API and type to support macOS 10.14 / iOS 12 */
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
+
+static void apnw_append_tls_ciphersuite(sec_protocol_options_t options,
+                                        uint16_t ciphersuite)
+{
+  sec_protocol_options_add_tls_ciphersuite(options, ciphersuite);
+}
 
 static void apnw_set_min_tls_version(sec_protocol_options_t options,
                                      unsigned char version)
@@ -110,6 +116,20 @@ static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
+
+static void apnw_set_cipher_list(struct Curl_easy *data, const char *ciphers,
+                                 sec_protocol_options_t options)
+{
+  const char *ptr, *end;
+  for(ptr = ciphers; ptr[0] != '\0'; ptr = end) {
+    uint16_t id = Curl_cipher_suite_walk_str(&ptr, &end);
+    if(id)
+      apnw_append_tls_ciphersuite(options, id);
+    else
+      infof(data, "SSL: unknown cipher in list: \"%.*s\"", (int)(end - ptr),
+            ptr);
+  }
+}
 
 static CURLcode apnw_copy_key_der(struct Curl_easy *data, SecKeyRef key,
                                   unsigned char **der, size_t *der_len)
@@ -310,6 +330,14 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
       for(i = 0; i < connssl->alpn->count; ++i) {
         sec_protocol_options_add_tls_application_protocol(
           sec_options, connssl->alpn->entries[i]);
+      }
+
+      if(pri_config->cipher_list13) {
+        apnw_set_cipher_list(data, pri_config->cipher_list13, sec_options);
+      }
+
+      if(pri_config->cipher_list) {
+        apnw_set_cipher_list(data, pri_config->cipher_list, sec_options);
       }
 
       apnw_set_min_tls_version(sec_options, pri_config->version);

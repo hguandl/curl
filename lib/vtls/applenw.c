@@ -401,10 +401,9 @@ static void apnw_close(struct Curl_cfilter *cf, struct Curl_easy *data)
   struct ssl_connect_data *connssl = cf->ctx;
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
 
-  (void)data;
+  DEBUGF(infof(data, "Closing APNW connection"));
 
   if(backend->connection) {
-    nw_connection_force_cancel(backend->connection);
     nw_release(backend->connection);
     backend->connection = NULL;
   }

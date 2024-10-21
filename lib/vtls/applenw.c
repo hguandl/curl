@@ -22,6 +22,25 @@ struct nw_ssl_backend_data {
   nw_connection_state_t state;
 };
 
+/* SPKI headers, copied from sectransp.c */
+static const unsigned char rsa4096SpkiHeader[] = {
+  0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+  0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00};
+
+static const unsigned char rsa2048SpkiHeader[] = {
+  0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+  0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00};
+
+static const unsigned char ecDsaSecp256r1SpkiHeader[] = {
+  0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48,
+  0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48,
+  0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00};
+
+static const unsigned char ecDsaSecp384r1SpkiHeader[] = {
+  0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+  0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00};
+
+/* Allow legacy SSLProtocol to support macOS 10.14 / iOS 12 */
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -91,6 +110,125 @@ static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
+
+static CURLcode apnw_copy_key_der(struct Curl_easy *data, SecKeyRef key,
+                                  unsigned char **der, size_t *der_len)
+{
+  CURLcode result = CURLE_OK;
+  CFDictionaryRef key_attr = SecKeyCopyAttributes(key);
+  CFDataRef key_data = SecKeyCopyExternalRepresentation(key, NULL);
+
+  do {
+    CFStringRef key_type;
+    CFNumberRef key_size;
+    int key_bits;
+
+    const unsigned char *spkiHeader = NULL;
+    size_t spkiHeaderLength;
+
+    CFIndex key_len;
+    const UInt8 *key_ptr;
+
+    if(!key_attr) {
+      failf(data, "Failed to parse peer public key");
+      result = CURLE_PEER_FAILED_VERIFICATION;
+      break;
+    }
+
+    key_type = CFDictionaryGetValue(key_attr, kSecAttrKeyType);
+    key_size = CFDictionaryGetValue(key_attr, kSecAttrKeySizeInBits);
+    CFNumberGetValue(key_size, kCFNumberIntType, &key_bits);
+
+    if(CFEqual(key_type, kSecAttrKeyTypeRSA)) {
+      if(key_bits == 4096) {
+        spkiHeader = rsa4096SpkiHeader;
+        spkiHeaderLength = sizeof(rsa4096SpkiHeader);
+      }
+      else if(key_bits == 2048) {
+        spkiHeader = rsa2048SpkiHeader;
+        spkiHeaderLength = sizeof(rsa2048SpkiHeader);
+      }
+    }
+    else if(CFEqual(key_type, kSecAttrKeyTypeECSECPrimeRandom)) {
+      if(key_bits == 256) {
+        spkiHeader = ecDsaSecp256r1SpkiHeader;
+        spkiHeaderLength = sizeof(ecDsaSecp256r1SpkiHeader);
+      }
+      else if(key_bits == 384) {
+        spkiHeader = ecDsaSecp384r1SpkiHeader;
+        spkiHeaderLength = sizeof(ecDsaSecp384r1SpkiHeader);
+      }
+    }
+
+    if(!spkiHeader) {
+      failf(data, "Unrecoginized peer public key");
+      result = CURLE_PEER_FAILED_VERIFICATION;
+      break;
+    }
+
+    if(!key_data) {
+      failf(data, "Failed to get peer public key data");
+      result = CURLE_PEER_FAILED_VERIFICATION;
+      break;
+    }
+
+    key_len = CFDataGetLength(key_data);
+    key_ptr = CFDataGetBytePtr(key_data);
+
+    *der_len = key_len + spkiHeaderLength;
+    *der = (unsigned char *)malloc(*der_len);
+    if(!*der) {
+      failf(data, "Failed to allocate memory for peer public key");
+      result = CURLE_OUT_OF_MEMORY;
+      break;
+    }
+
+    memcpy(*der, spkiHeader, spkiHeaderLength);
+    memcpy(*der + spkiHeaderLength, key_ptr, key_len);
+  } while(0);
+
+  if(key_attr)
+    CFRelease(key_attr);
+  if(key_data)
+    CFRelease(key_data);
+
+  return result;
+}
+
+static bool apnw_pin_peer_key(struct Curl_easy *data, SecTrustRef trust,
+                              const char *key_sha256_b64)
+{
+  CURLcode result = CURLE_OK;
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_VERSION_11_0
+  SecKeyRef key = SecTrustCopyKey(trust);
+#else
+  SecKeyRef key = SecTrustCopyPublicKey(trust);
+#endif
+
+  do {
+    unsigned char *der;
+    size_t der_len;
+
+    if(!key) {
+      failf(data, "Failed to get peer public key");
+      result = CURLE_PEER_FAILED_VERIFICATION;
+      break;
+    }
+
+    result = apnw_copy_key_der(data, key, &der, &der_len);
+    if(result != CURLE_OK) {
+      break;
+    }
+
+    result = Curl_pin_peer_pubkey(data, key_sha256_b64, der, der_len);
+    free(der);
+  } while(0);
+
+  if(key)
+    CFRelease(key);
+
+  return result == CURLE_OK;
+}
 
 static size_t apnw_version(char *buffer, size_t size)
 {
@@ -189,8 +327,18 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
           sec_protocol_verify_complete_t complete) {
           SecTrustRef trust = sec_trust_copy_ref(trust_ref);
 
+          (void)metadata;
+
+          if(pri_config->pinned_key)
+            if(!apnw_pin_peer_key(data, trust, pri_config->pinned_key)) {
+              failf(data, "Failed to pin peer public key");
+              complete(false);
+              sec_release(trust);
+              return;
+            }
+
           if(SecTrustEvaluateWithError(trust, NULL))
-            complete(false);
+            complete(true);
           else {
             failf(data, "Failed to verify peer certificate");
             complete(!pri_config->verifypeer);
@@ -567,8 +715,8 @@ static CURLcode apnw_shutdown(struct Curl_cfilter *cf, struct Curl_easy *data,
 const struct Curl_ssl Curl_ssl_applenw = {
   {CURLSSLBACKEND_APPLENETWORK, "apple-network"}, /* info */
 
-  SSLSUPP_CERTINFO | SSLSUPP_HTTPS_PROXY | SSLSUPP_CIPHER_LIST |
-    SSLSUPP_TLS13_CIPHERSUITES,
+  SSLSUPP_CERTINFO | SSLSUPP_PINNEDPUBKEY | SSLSUPP_HTTPS_PROXY |
+    SSLSUPP_CIPHER_LIST | SSLSUPP_TLS13_CIPHERSUITES,
 
   sizeof(struct nw_ssl_backend_data),
 

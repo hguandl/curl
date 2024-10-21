@@ -22,11 +22,6 @@ struct nw_ssl_backend_data {
   nw_connection_state_t state;
 };
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -92,10 +87,6 @@ static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
   uint16_t id = sec_protocol_metadata_get_negotiated_ciphersuite(metadata);
   return Curl_cipher_suite_get_str(id, buf, buf_size, TRUE);
 }
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -182,11 +173,11 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
           sec_options, connssl->alpn->entries[i]);
       }
 
-      sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
-
       apnw_set_min_tls_version(sec_options, pri_config->version);
 
       apnw_set_max_tls_version(sec_options, pri_config->version_max);
+
+      sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
 
       sec_protocol_options_set_tls_false_start_enabled(sec_options,
                                                        ssl_config->falsestart);

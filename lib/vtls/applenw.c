@@ -357,6 +357,9 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
 
           (void)metadata;
 
+          if(pri_config->CAfile || pri_config->ca_info_blob)
+            infof(data, "Warning: SSL: Keychain is preferred over CA file");
+
           if(pri_config->pinned_key)
             if(!apnw_pin_peer_key(data, trust, pri_config->pinned_key)) {
               failf(data, "Failed to pin peer public key");
@@ -421,8 +424,9 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   infof(data, "SSL connection using %s / %s", tls_str, cipher_str);
 
   alpn = sec_protocol_metadata_get_negotiated_protocol(sec_meta);
-  Curl_alpn_set_negotiated(cf, data, connssl, (const unsigned char *)alpn,
-                           strlen(alpn));
+  if(alpn)
+    Curl_alpn_set_negotiated(cf, data, connssl, (const unsigned char *)alpn,
+                             strlen(alpn));
 
   sec_protocol_metadata_access_peer_certificate_chain(
     sec_meta, ^(sec_certificate_t cert_ref) {

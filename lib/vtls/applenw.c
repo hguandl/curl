@@ -106,6 +106,11 @@ static size_t apnw_version(char *buffer, size_t size)
   return msnprintf(buffer, size, "Network");
 }
 
+static bool apnw_false_start(void)
+{
+  return TRUE;
+}
+
 static CURLcode apnw_random(struct Curl_easy *data UNUSED_PARAM,
                             unsigned char *entropy, size_t length)
 {
@@ -163,6 +168,7 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
                                     nw_parameters_t *parameters)
 {
   struct ssl_connect_data *connssl = cf->ctx;
+  struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
   struct ssl_primary_config *pri_config = Curl_ssl_cf_get_primary_config(cf);
 
   *parameters = nw_parameters_create_secure_tcp(
@@ -181,6 +187,9 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
       apnw_set_min_tls_version(sec_options, pri_config->version);
 
       apnw_set_max_tls_version(sec_options, pri_config->version_max);
+
+      sec_protocol_options_set_tls_false_start_enabled(sec_options,
+                                                       ssl_config->falsestart);
 
       nw_release(sec_options);
     },
@@ -571,7 +580,7 @@ const struct Curl_ssl Curl_ssl_applenw = {
   Curl_none_set_engine,          /* set_engine */
   Curl_none_set_engine_default,  /* set_engine_default */
   Curl_none_engines_list,        /* engines_list */
-  Curl_none_false_start,         /* false_start */
+  apnw_false_start,              /* false_start */
   apnw_sha256sum,                /* sha256sum */
   NULL,                          /* associate_connection */
   NULL,                          /* disassociate_connection */

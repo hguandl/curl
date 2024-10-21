@@ -350,10 +350,12 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
       sec_protocol_options_t sec_options =
         nw_tls_copy_sec_protocol_options(tls_options);
 
-      size_t i;
-      for(i = 0; i < connssl->alpn->count; ++i) {
-        sec_protocol_options_add_tls_application_protocol(
-          sec_options, connssl->alpn->entries[i]);
+      if(connssl->alpn) {
+        size_t i;
+        for(i = 0; i < connssl->alpn->count; ++i) {
+          sec_protocol_options_add_tls_application_protocol(
+            sec_options, connssl->alpn->entries[i]);
+        }
       }
 
       if(pri_config->cipher_list13) {

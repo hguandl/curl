@@ -163,7 +163,7 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
                                     nw_parameters_t *parameters)
 {
   struct ssl_connect_data *connssl = cf->ctx;
-  struct ssl_primary_config *ssl_config = Curl_ssl_cf_get_primary_config(cf);
+  struct ssl_primary_config *pri_config = Curl_ssl_cf_get_primary_config(cf);
 
   *parameters = nw_parameters_create_secure_tcp(
     ^(nw_protocol_options_t tls_options) {
@@ -178,9 +178,9 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
 
       sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
 
-      apnw_set_min_tls_version(sec_options, ssl_config->version);
+      apnw_set_min_tls_version(sec_options, pri_config->version);
 
-      apnw_set_max_tls_version(sec_options, ssl_config->version_max);
+      apnw_set_max_tls_version(sec_options, pri_config->version_max);
 
       nw_release(sec_options);
     },
@@ -202,6 +202,7 @@ static dispatch_time_t apnw_get_timeout(struct Curl_easy *data)
 static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
 {
   struct ssl_connect_data *connssl = cf->ctx;
+  struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
   nw_connection_t conn = backend->connection;
 
@@ -240,7 +241,7 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
       if(sub)
         CFRelease(sub);
 
-      if(data->set.ssl.certinfo) {
+      if(ssl_config->certinfo) {
         do {
           CURLcode result;
           const char *beg;

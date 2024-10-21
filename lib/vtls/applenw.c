@@ -13,6 +13,7 @@
 #include "vtls.h"
 #include "vtls_int.h"
 #include "applenw.h"
+#include "cipher_suite.h"
 #include "x509asn1.h"
 
 struct nw_ssl_backend_data {
@@ -20,6 +21,85 @@ struct nw_ssl_backend_data {
   nw_connection_t connection;
   nw_connection_state_t state;
 };
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+static void apnw_set_min_tls_version(sec_protocol_options_t options,
+                                     unsigned char version)
+{
+  switch(version) {
+  case CURL_SSLVERSION_TLSv1_0:
+    sec_protocol_options_set_tls_min_version(options, kTLSProtocol1);
+    break;
+  case CURL_SSLVERSION_TLSv1_1:
+    sec_protocol_options_set_tls_min_version(options, kTLSProtocol11);
+    break;
+  case CURL_SSLVERSION_TLSv1_2:
+    sec_protocol_options_set_tls_min_version(options, kTLSProtocol12);
+    break;
+  case CURL_SSLVERSION_TLSv1_3:
+    sec_protocol_options_set_tls_min_version(options, kTLSProtocol13);
+    break;
+  }
+}
+
+static void apnw_set_max_tls_version(sec_protocol_options_t options,
+                                     unsigned int version_max)
+{
+  switch(version_max) {
+  case CURL_SSLVERSION_MAX_TLSv1_0:
+    sec_protocol_options_set_tls_max_version(options, kTLSProtocol1);
+    break;
+  case CURL_SSLVERSION_MAX_TLSv1_1:
+    sec_protocol_options_set_tls_max_version(options, kTLSProtocol11);
+    break;
+  case CURL_SSLVERSION_MAX_TLSv1_2:
+    sec_protocol_options_set_tls_max_version(options, kTLSProtocol12);
+    break;
+  case CURL_SSLVERSION_MAX_TLSv1_3:
+    sec_protocol_options_set_tls_max_version(options, kTLSProtocol13);
+    break;
+  }
+}
+
+static const char *apnw_get_tls_version_str(sec_protocol_metadata_t metadata)
+{
+  switch(sec_protocol_metadata_get_negotiated_protocol_version(metadata)) {
+  case kTLSProtocol1:
+    return "TLSv1.0";
+  case kTLSProtocol11:
+    return "TLSv1.1";
+  case kTLSProtocol12:
+    return "TLSv1.2";
+  case kTLSProtocol13:
+    return "TLSv1.3";
+  default:
+    return "TLS_UNKNOWN";
+  }
+}
+
+static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
+                                     char *buf, size_t buf_size)
+{
+  uint16_t id = sec_protocol_metadata_get_negotiated_ciphersuite(metadata);
+  return Curl_cipher_suite_get_str(id, buf, buf_size, TRUE);
+}
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 static size_t apnw_version(char *buffer, size_t size)
 {
@@ -98,35 +178,9 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
 
       sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
 
-      switch(ssl_config->version) {
-      case CURL_SSLVERSION_TLSv1_0:
-        sec_protocol_options_set_tls_min_version(sec_options, kTLSProtocol1);
-        break;
-      case CURL_SSLVERSION_TLSv1_1:
-        sec_protocol_options_set_tls_min_version(sec_options, kTLSProtocol11);
-        break;
-      case CURL_SSLVERSION_TLSv1_2:
-        sec_protocol_options_set_tls_min_version(sec_options, kTLSProtocol12);
-        break;
-      case CURL_SSLVERSION_TLSv1_3:
-        sec_protocol_options_set_tls_min_version(sec_options, kTLSProtocol13);
-        break;
-      }
+      apnw_set_min_tls_version(sec_options, ssl_config->version);
 
-      switch(ssl_config->version_max) {
-      case CURL_SSLVERSION_MAX_TLSv1_0:
-        sec_protocol_options_set_tls_max_version(sec_options, kTLSProtocol1);
-        break;
-      case CURL_SSLVERSION_MAX_TLSv1_1:
-        sec_protocol_options_set_tls_max_version(sec_options, kTLSProtocol11);
-        break;
-      case CURL_SSLVERSION_MAX_TLSv1_2:
-        sec_protocol_options_set_tls_max_version(sec_options, kTLSProtocol12);
-        break;
-      case CURL_SSLVERSION_MAX_TLSv1_3:
-        sec_protocol_options_set_tls_max_version(sec_options, kTLSProtocol13);
-        break;
-      }
+      apnw_set_max_tls_version(sec_options, ssl_config->version_max);
 
       nw_release(sec_options);
     },
@@ -155,8 +209,8 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   nw_protocol_definition_t tls = nw_protocol_copy_tls_definition();
   nw_protocol_metadata_t tls_meta;
   sec_protocol_metadata_t sec_meta;
-  SSLProtocol tls_ver;
-  SSLCipherSuite cipher;
+  const char *tls_str;
+  char cipher_str[64];
   const char *alpn;
   __block int cert_i = 0;
 
@@ -167,10 +221,9 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   tls_meta = nw_connection_copy_protocol_metadata(conn, tls);
   sec_meta = nw_tls_copy_sec_protocol_metadata(tls_meta);
 
-  tls_ver = sec_protocol_metadata_get_negotiated_protocol_version(sec_meta);
-  cipher = sec_protocol_metadata_get_negotiated_ciphersuite(sec_meta);
-  infof(data, "SSL connection using SSLProtocol %d / SSLCipherSuite 0x%x",
-        tls_ver, cipher);
+  tls_str = apnw_get_tls_version_str(sec_meta);
+  apnw_get_cipher_suite_str(sec_meta, cipher_str, 64);
+  infof(data, "SSL connection using %s / %s", tls_str, cipher_str);
 
   alpn = sec_protocol_metadata_get_negotiated_protocol(sec_meta);
   Curl_alpn_set_negotiated(cf, data, connssl, (const unsigned char *)alpn,

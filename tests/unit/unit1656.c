@@ -36,7 +36,7 @@ static void unit_stop(void)
 }
 
 #if defined(USE_GNUTLS) || defined(USE_SCHANNEL) || defined(USE_SECTRANSP) || \
-  defined(USE_MBEDTLS)
+  defined(USE_MBEDTLS) || defined(USE_APPLENW)
 
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(A) (sizeof(A)/sizeof((A)[0]))

@@ -23,13 +23,8 @@
  ***************************************************************************/
 #include "curl_setup.h"
 
-/* Network.framework is the successor of SecureTransport */
-#ifdef USE_APPLENW
-#define USE_SECTRANSP
-#endif
-
 #if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) || \
-    defined(USE_BEARSSL) || defined(USE_RUSTLS)
+    defined(USE_BEARSSL) || defined(USE_RUSTLS) || defined(USE_APPLENW)
 #include "cipher_suite.h"
 #include "curl_printf.h"
 #include "strcase.h"
@@ -95,7 +90,7 @@ static const char *cs_txt =
   "CAMELLIA128" "\0"
   "CAMELLIA256" "\0"
 #endif
-#if defined(USE_SECTRANSP)
+#if defined(USE_SECTRANSP) || defined(USE_APPLENW)
   "40" "\0"
   "ADH" "\0"
   "AECDH" "\0"
@@ -151,7 +146,7 @@ enum {
   CS_TXT_IDX_CAMELLIA128,
   CS_TXT_IDX_CAMELLIA256,
 #endif
-#if defined(USE_SECTRANSP)
+#if defined(USE_SECTRANSP) || defined(USE_APPLENW)
   CS_TXT_IDX_40,
   CS_TXT_IDX_ADH,
   CS_TXT_IDX_AECDH,
@@ -197,7 +192,8 @@ struct cs_entry {
 /* !checksrc! disable COMMANOSPACE all */
 static const struct cs_entry cs_list [] = {
   /* TLS 1.3 ciphers */
-#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) || defined(USE_RUSTLS)
+#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) ||  \
+    defined(USE_RUSTLS) || defined(USE_APPLENW)
   CS_ENTRY(0x1301, TLS,AES,128,GCM,SHA256,,,),
   CS_ENTRY(0x1302, TLS,AES,256,GCM,SHA384,,,),
   CS_ENTRY(0x1303, TLS,CHACHA20,POLY1305,SHA256,,,,),
@@ -217,7 +213,8 @@ static const struct cs_entry cs_list [] = {
   CS_ENTRY(0xCCA8, ECDHE,RSA,CHACHA20,POLY1305,,,,),
   CS_ENTRY(0xCCA9, TLS,ECDHE,ECDSA,WITH,CHACHA20,POLY1305,SHA256,),
   CS_ENTRY(0xCCA9, ECDHE,ECDSA,CHACHA20,POLY1305,,,,),
-#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) || defined(USE_BEARSSL)
+#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) ||  \
+    defined(USE_BEARSSL) || defined(USE_APPLENW)
   CS_ENTRY(0x002F, TLS,RSA,WITH,AES,128,CBC,SHA,),
   CS_ENTRY(0x002F, AES128,SHA,,,,,,),
   CS_ENTRY(0x0035, TLS,RSA,WITH,AES,256,CBC,SHA,),
@@ -271,7 +268,7 @@ static const struct cs_entry cs_list [] = {
   CS_ENTRY(0xC032, TLS,ECDH,RSA,WITH,AES,256,GCM,SHA384),
   CS_ENTRY(0xC032, ECDH,RSA,AES256,GCM,SHA384,,,),
 #endif
-#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS)
+#if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) || defined(USE_APPLENW)
   CS_ENTRY(0x0001, TLS,RSA,WITH,NULL,MD5,,,),
   CS_ENTRY(0x0001, NULL,MD5,,,,,,),
   CS_ENTRY(0x0002, TLS,RSA,WITH,NULL,SHA,,,),
@@ -359,7 +356,7 @@ static const struct cs_entry cs_list [] = {
   CS_ENTRY(0xCCAB, TLS,PSK,WITH,CHACHA20,POLY1305,SHA256,,),
   CS_ENTRY(0xCCAB, PSK,CHACHA20,POLY1305,,,,,),
 #endif
-#if defined(USE_SECTRANSP) || defined(USE_BEARSSL)
+#if defined(USE_SECTRANSP) || defined(USE_BEARSSL) || defined(USE_APPLENW)
   CS_ENTRY(0x000A, TLS,RSA,WITH,3DES,EDE,CBC,SHA,),
   CS_ENTRY(0x000A, DES,CBC3,SHA,,,,,),
   CS_ENTRY(0xC003, TLS,ECDH,ECDSA,WITH,3DES,EDE,CBC,SHA),
@@ -389,7 +386,7 @@ static const struct cs_entry cs_list [] = {
   CS_ENTRY(0xC0AF, TLS,ECDHE,ECDSA,WITH,AES,256,CCM,8),
   CS_ENTRY(0xC0AF, ECDHE,ECDSA,AES256,CCM8,,,,),
 #endif
-#if defined(USE_SECTRANSP)
+#if defined(USE_SECTRANSP) || defined(USE_APPLENW)
   /* entries marked bc are backward compatible aliases for old OpenSSL names */
   CS_ENTRY(0x0003, TLS,RSA,EXPORT,WITH,RC4,40,MD5,),
   CS_ENTRY(0x0003, EXP,RC4,MD5,,,,,),

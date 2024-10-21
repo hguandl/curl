@@ -26,13 +26,8 @@
 
 #include "curl_setup.h"
 
-/* Network.framework is the successor of SecureTransport */
-#ifdef USE_APPLENW
-#define USE_SECTRANSP
-#endif
-
 #if defined(USE_SECTRANSP) || defined(USE_MBEDTLS) || \
-    defined(USE_BEARSSL) || defined(USE_RUSTLS)
+    defined(USE_BEARSSL) || defined(USE_RUSTLS) || defined(USE_APPLENW)
 #include <stdint.h>
 
 /* Lookup IANA id for cipher suite string, returns 0 if not recognized */

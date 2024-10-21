@@ -28,7 +28,8 @@
   (defined(USE_GNUTLS) ||          \
    defined(USE_SECTRANSP) ||       \
    defined(USE_OS400CRYPTO) ||     \
-   defined(USE_WIN32_CRYPTO))
+   defined(USE_WIN32_CRYPTO)) ||   \
+   defined(USE_APPLENW)
 
 #include "curl_des.h"
 

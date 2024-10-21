@@ -80,7 +80,7 @@ CURLcode Curl_verifyhost(struct Curl_cfilter *cf, struct Curl_easy *data,
 
 #ifdef UNITTESTS
 #if defined(USE_GNUTLS) || defined(USE_SCHANNEL) || defined(USE_SECTRANSP) || \
-  defined(USE_MBEDTLS)
+  defined(USE_MBEDTLS) || defined(USE_APPLENW)
 
 /* used by unit1656.c */
 CURLcode Curl_x509_GTime2str(struct dynbuf *store,

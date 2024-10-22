@@ -133,8 +133,19 @@ static const char *apnw_get_tls_version_str(sec_protocol_metadata_t metadata)
 static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
                                      char *buf, size_t buf_size)
 {
-  uint16_t id = sec_protocol_metadata_get_negotiated_ciphersuite(metadata);
-  return Curl_cipher_suite_get_str(id, buf, buf_size, TRUE);
+  SSLCipherSuite id =
+    sec_protocol_metadata_get_negotiated_ciphersuite(metadata);
+  return Curl_cipher_suite_get_str((uint16_t)id, buf, buf_size, TRUE);
+}
+
+static SecKeyRef apnw_copy_peer_key(SecTrustRef trust)
+{
+  return SecTrustCopyPublicKey(trust);
+}
+
+static SecCertificateRef apnw_get_cert(SecTrustRef trust, CFIndex ci)
+{
+  return SecTrustGetCertificateAtIndex(trust, ci);
 }
 
 #ifdef __GNUC__
@@ -243,11 +254,7 @@ static bool apnw_pin_peer_key(struct Curl_easy *data, SecTrustRef trust,
                               const char *key_sha256_b64)
 {
   CURLcode result = CURLE_OK;
-#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_VERSION_11_0
-  SecKeyRef key = SecTrustCopyKey(trust);
-#else
-  SecKeyRef key = SecTrustCopyPublicKey(trust);
-#endif
+  SecKeyRef key = apnw_copy_peer_key(trust);
 
   do {
     unsigned char *der;
@@ -381,7 +388,51 @@ static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
           sec_protocol_verify_complete_t complete) {
           SecTrustRef trust = sec_trust_copy_ref(trust_ref);
 
+          CFIndex cn = SecTrustGetCertificateCount(trust);
+          CFIndex ci;
+
           (void)metadata;
+
+          if(ssl_config->certinfo) {
+            Curl_ssl_init_certinfo(data, (int)cn);
+          }
+
+          for(ci = 0; ci < cn; ++ci) {
+            SecCertificateRef cert = apnw_get_cert(trust, ci);
+
+            CFStringRef sub =
+              SecCertificateCopyLongDescription(NULL, cert, NULL);
+            const char *str =
+              CFStringGetCStringPtr(sub, kCFStringEncodingUTF8);
+
+            if(str)
+              infof(data, "Server certificate: %s", str);
+            if(sub)
+              CFRelease(sub);
+
+            if(ssl_config->certinfo) {
+              CURLcode result;
+              const char *beg;
+              const char *end;
+              CFDataRef der = SecCertificateCopyData(cert);
+
+              if(!der) {
+                infof(data, "Failed to get certificate data");
+                break;
+              }
+
+              beg = (const char *)CFDataGetBytePtr(der);
+              end = beg + CFDataGetLength(der);
+
+              result = Curl_extract_certinfo(data, (int)ci, beg, end);
+              CFRelease(der);
+
+              if(result != CURLE_OK) {
+                infof(data, "Failed to extract certificate information");
+                break;
+              }
+            }
+          }
 
           if(pri_config->CAfile || pri_config->ca_info_blob)
             infof(data, "Warning: SSL: Keychain is preferred over CA file");
@@ -425,7 +476,6 @@ static dispatch_time_t apnw_get_timeout(struct Curl_easy *data)
 static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
 {
   struct ssl_connect_data *connssl = cf->ctx;
-  struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
   nw_connection_t conn = backend->connection;
 
@@ -436,7 +486,6 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   const char *tls_str;
   char cipher_str[64];
   const char *alpn;
-  __block int cert_i = 0;
 
   desc = nw_connection_copy_description(conn);
   infof(data, "%s", desc);
@@ -453,47 +502,6 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   if(alpn)
     Curl_alpn_set_negotiated(cf, data, connssl, (const unsigned char *)alpn,
                              strlen(alpn));
-
-  sec_protocol_metadata_access_peer_certificate_chain(
-    sec_meta, ^(sec_certificate_t cert_ref) {
-      SecCertificateRef cert = sec_certificate_copy_ref(cert_ref);
-      CFStringRef sub = SecCertificateCopyLongDescription(NULL, cert, NULL);
-      const char *str = CFStringGetCStringPtr(sub, kCFStringEncodingUTF8);
-
-      if(str)
-        infof(data, "Server certificate: %s", str);
-      if(sub)
-        CFRelease(sub);
-
-      if(ssl_config->certinfo) {
-        do {
-          CURLcode result;
-          const char *beg;
-          const char *end;
-          CFDataRef der = SecCertificateCopyData(cert);
-
-          if(!der) {
-            infof(data, "Failed to get certificate data");
-            break;
-          }
-
-          beg = (const char *)CFDataGetBytePtr(der);
-          end = beg + CFDataGetLength(der);
-
-          result = Curl_extract_certinfo(data, cert_i, beg, end);
-          CFRelease(der);
-
-          if(result != CURLE_OK) {
-            infof(data, "Failed to extract certificate information");
-            break;
-          }
-
-          ++cert_i;
-        } while(0);
-      }
-
-      CFRelease(cert);
-    });
 
   nw_release(tls);
   nw_release(tls_meta);

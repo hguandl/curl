@@ -130,8 +130,8 @@ static const char *apnw_get_tls_version_str(sec_protocol_metadata_t metadata)
   }
 }
 
-static int apnw_get_cipher_suite_str(sec_protocol_metadata_t metadata,
-                                     char *buf, size_t buf_size)
+static int apnw_copy_cipher_suite_str(sec_protocol_metadata_t metadata,
+                                      char *buf, size_t buf_size)
 {
   SSLCipherSuite id =
     sec_protocol_metadata_get_negotiated_ciphersuite(metadata);
@@ -320,9 +320,9 @@ static void *apnw_get_internals(struct ssl_connect_data *connssl,
   return (void *)backend->connection;
 }
 
-static CURLcode apnw_get_endpoint(struct Curl_easy *data,
-                                  struct Curl_cfilter *cf,
-                                  nw_endpoint_t *endpoint)
+static CURLcode apnw_create_endpoint(struct Curl_easy *data,
+                                     struct Curl_cfilter *cf,
+                                     nw_endpoint_t *endpoint)
 {
   curl_socket_t socket = Curl_conn_cf_get_socket(cf, data);
 
@@ -343,9 +343,9 @@ static CURLcode apnw_get_endpoint(struct Curl_easy *data,
   return CURLE_OK;
 }
 
-static CURLcode apnw_get_parameters(struct Curl_cfilter *cf,
-                                    struct Curl_easy *data,
-                                    nw_parameters_t *parameters)
+static CURLcode apnw_create_parameters(struct Curl_cfilter *cf,
+                                       struct Curl_easy *data,
+                                       nw_parameters_t *parameters)
 {
   struct ssl_connect_data *connssl = cf->ctx;
   struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
@@ -495,7 +495,7 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   sec_meta = nw_tls_copy_sec_protocol_metadata(tls_meta);
 
   tls_str = apnw_get_tls_version_str(sec_meta);
-  apnw_get_cipher_suite_str(sec_meta, cipher_str, 64);
+  apnw_copy_cipher_suite_str(sec_meta, cipher_str, 64);
   infof(data, "SSL connection using %s / %s", tls_str, cipher_str);
 
   alpn = sec_protocol_metadata_get_negotiated_protocol(sec_meta);
@@ -521,14 +521,14 @@ static CURLcode apnw_connect_common(struct Curl_cfilter *cf,
   nw_parameters_t parameters;
   dispatch_group_t group = dispatch_group_create();
 
-  result = apnw_get_endpoint(data, cf, &endpoint);
+  result = apnw_create_endpoint(data, cf, &endpoint);
   if(result != CURLE_OK) {
     return result;
   }
 
   backend->queue = dispatch_queue_create("curl.vtls.applenw", NULL);
 
-  result = apnw_get_parameters(cf, data, &parameters);
+  result = apnw_create_parameters(cf, data, &parameters);
   if(result != CURLE_OK) {
     nw_release(endpoint);
     return result;

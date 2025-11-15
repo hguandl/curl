@@ -28,18 +28,18 @@
 #ifdef USE_NWF
 
 #include "apple.h"
-#include "urldata.h"
-#include "cfilters.h"
+#include "../urldata.h"
+#include "../cfilters.h"
 #include "vtls.h"
 #include "vtls_int.h"
-#include "sendf.h"
-#include "connect.h"
-#include "strerror.h"
-#include "select.h"
+#include "../sendf.h"
+#include "../connect.h"
+#include "../strerror.h"
+#include "../select.h"
 #include "../socketpair.h"
 #include "../http_proxy.h"
-#include "multiif.h"
-#include "curl_printf.h"
+#include "../multiif.h"
+#include "../curl_printf.h"
 #include <Network/Network.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CommonCrypto/CommonDigest.h>

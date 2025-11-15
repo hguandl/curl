@@ -568,6 +568,10 @@ sub checksystemfeatures {
                 $feature{"sectransp"} = 1;
                 $feature{"SSLpinning"} = 1;
             }
+            elsif ($libcurl =~ /\sNetwork\b/i) {
+                $feature{"applenw"} = 1;
+                $feature{"SSLpinning"} = 1;
+            }
             elsif ($libcurl =~ /\sBoringSSL\b/i) {
                 # OpenSSL compatible API
                 $feature{"OpenSSL"} = 1;

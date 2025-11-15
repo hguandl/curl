@@ -28,6 +28,7 @@
 
 #include "urldata.h"
 #include "connect.h"
+#include "curl_base64.h"
 #include "curl_printf.h"
 #include "curl_trc.h"
 
@@ -45,6 +46,252 @@ struct nw_ssl_backend_data {
   nw_connection_t connection;
   nw_connection_state_t state;
 };
+
+static long pem_to_der(const char *in, unsigned char **out, size_t *outlen)
+{
+  char *sep_start, *sep_end, *cert_start, *cert_end;
+  size_t i, j, err;
+  size_t len;
+  char *b64;
+
+  /* Jump through the separators at the beginning of the certificate. */
+  sep_start = strstr(in, "-----");
+  if(!sep_start)
+    return 0;
+  cert_start = strstr(sep_start + 1, "-----");
+  if(!cert_start)
+    return -1;
+
+  cert_start += 5;
+
+  /* Find separator after the end of the certificate. */
+  cert_end = strstr(cert_start, "-----");
+  if(!cert_end)
+    return -1;
+
+  sep_end = strstr(cert_end + 1, "-----");
+  if(!sep_end)
+    return -1;
+  sep_end += 5;
+
+  len = cert_end - cert_start;
+  b64 = malloc(len + 1);
+  if(!b64)
+    return -1;
+
+  /* Create base64 string without linefeeds. */
+  for(i = 0, j = 0; i < len; i++) {
+    if(cert_start[i] != '\r' && cert_start[i] != '\n')
+      b64[j++] = cert_start[i];
+  }
+  b64[j] = '\0';
+
+  err = Curl_base64_decode((const char *)b64, out, outlen);
+  free(b64);
+  if(err) {
+    free(*out);
+    return -1;
+  }
+
+  return sep_end - in;
+}
+
+#define MAX_CERTS_SIZE (50 * 1024 * 1024) /* arbitrary - to catch mistakes */
+
+static int read_cert(const char *file, unsigned char **out, size_t *outlen)
+{
+  int fd;
+  ssize_t n;
+  unsigned char buf[512];
+  struct dynbuf certs;
+
+  Curl_dyn_init(&certs, MAX_CERTS_SIZE);
+
+  fd = open(file, 0);
+  if(fd < 0)
+    return -1;
+
+  for(;;) {
+    n = read(fd, buf, sizeof(buf));
+    if(!n)
+      break;
+    if(n < 0) {
+      close(fd);
+      Curl_dyn_free(&certs);
+      return -1;
+    }
+    if(Curl_dyn_addn(&certs, buf, n)) {
+      close(fd);
+      return -1;
+    }
+  }
+  close(fd);
+
+  *out = Curl_dyn_uptr(&certs);
+  *outlen = Curl_dyn_len(&certs);
+
+  return 0;
+}
+
+static CURLcode append_cert_to_array(struct Curl_easy *data,
+                                     const unsigned char *buf, size_t buflen,
+                                     CFMutableArrayRef array)
+{
+  char *certp;
+  CURLcode result;
+  SecCertificateRef cacert;
+  CFDataRef certdata;
+
+  certdata = CFDataCreate(kCFAllocatorDefault, buf, (CFIndex)buflen);
+  if(!certdata) {
+    failf(data, "SSL: failed to allocate array for CA certificate");
+    return CURLE_OUT_OF_MEMORY;
+  }
+
+  cacert = SecCertificateCreateWithData(kCFAllocatorDefault, certdata);
+  CFRelease(certdata);
+  if(!cacert) {
+    failf(data, "SSL: failed to create SecCertificate from CA certificate");
+    return CURLE_SSL_CACERT_BADFILE;
+  }
+
+  CFArrayAppendValue(array, cacert);
+  CFRelease(cacert);
+
+  return CURLE_OK;
+}
+
+static CURLcode verify_cert_buf(struct Curl_cfilter *cf,
+                                struct Curl_easy *data,
+                                const unsigned char *certbuf, size_t buflen,
+                                SecTrustRef trust)
+{
+  int n = 0;
+  CURLcode rc;
+  long res;
+  unsigned char *der;
+  size_t derlen, offset = 0;
+  OSStatus ret;
+  CFMutableArrayRef array = NULL;
+  CURLcode result = CURLE_PEER_FAILED_VERIFICATION;
+  (void)cf;
+  /*
+   * Certbuf now contains the contents of the certificate file, which can be
+   * - a single DER certificate,
+   * - a single PEM certificate or
+   * - a bunch of PEM certificates (certificate bundle).
+   *
+   * Go through certbuf, and convert any PEM certificate in it into DER
+   * format.
+   */
+  array = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+  if(!array) {
+    failf(data, "SSL: out of memory creating CA certificate array");
+    result = CURLE_OUT_OF_MEMORY;
+    goto out;
+  }
+
+  while(offset < buflen) {
+    n++;
+
+    /*
+     * Check if the certificate is in PEM format, and convert it to DER. If
+     * this fails, we assume the certificate is in DER format.
+     */
+    res = pem_to_der((const char *)certbuf + offset, &der, &derlen);
+    if(res < 0) {
+      failf(data, "SSL: invalid CA certificate #%d (offset %zu) in bundle", n,
+            offset);
+      result = CURLE_SSL_CACERT_BADFILE;
+      goto out;
+    }
+    offset += res;
+
+    if(res == 0 && offset == 0) {
+      /* This is not a PEM file, probably a certificate in DER format. */
+      rc = append_cert_to_array(data, certbuf, buflen, array);
+      if(rc != CURLE_OK) {
+        CURL_TRC_CF(data, cf, "append_cert for CA failed");
+        result = rc;
+        goto out;
+      }
+      break;
+    }
+    else if(res == 0) {
+      /* No more certificates in the bundle. */
+      break;
+    }
+
+    rc = append_cert_to_array(data, der, derlen, array);
+    /* free(der); */
+    if(rc != CURLE_OK) {
+      CURL_TRC_CF(data, cf, "append_cert for CA failed");
+      result = rc;
+      goto out;
+    }
+  }
+
+  ret = noErr;
+  if(!trust) {
+    failf(data, "SSL: error getting certificate chain");
+    goto out;
+  }
+  else if(ret != noErr) {
+    failf(data, "SSLCopyPeerTrust() returned error %d", ret);
+    goto out;
+  }
+
+  CURL_TRC_CF(data, cf, "setting %d trust anchors", n);
+  ret = SecTrustSetAnchorCertificates(trust, array);
+  if(ret != noErr) {
+    failf(data, "SecTrustSetAnchorCertificates() returned error %d", ret);
+    goto out;
+  }
+  ret = SecTrustSetAnchorCertificatesOnly(trust, TRUE);
+  if(ret != noErr) {
+    failf(data, "SecTrustSetAnchorCertificatesOnly() returned error %d", ret);
+    goto out;
+  }
+
+out:
+  if(trust)
+    CFRelease(trust);
+  if(array)
+    CFRelease(array);
+  return result;
+}
+
+static CURLcode verify_cert(struct Curl_cfilter *cf, struct Curl_easy *data,
+                            const char *cafile,
+                            const struct curl_blob *ca_info_blob,
+                            SecTrustRef trust)
+{
+  CURLcode result;
+  unsigned char *certbuf;
+  size_t buflen;
+  bool free_certbuf = FALSE;
+
+  if(ca_info_blob) {
+    CURL_TRC_CF(data, cf, "verify_peer, CA from config blob");
+    certbuf = ca_info_blob->data;
+    buflen = ca_info_blob->len;
+  }
+  else if(cafile) {
+    CURL_TRC_CF(data, cf, "verify_peer, CA from file '%s'", cafile);
+    if(read_cert(cafile, &certbuf, &buflen) < 0) {
+      failf(data, "SSL: failed to read or invalid CA certificate");
+      return CURLE_SSL_CACERT_BADFILE;
+    }
+    free_certbuf = TRUE;
+  }
+  else
+    return CURLE_SSL_CACERT_BADFILE;
+
+  result = verify_cert_buf(cf, data, certbuf, buflen, trust);
+  /* if(free_certbuf)
+    free(certbuf); */
+  return result;
+}
 
 /* SPKI headers, copied from sectransp.c */
 static const unsigned char rsa4096SpkiHeader[] = {
@@ -434,9 +681,6 @@ static CURLcode apnw_create_parameters(struct Curl_cfilter *cf,
             }
           }
 
-          if(pri_config->CAfile || pri_config->ca_info_blob)
-            infof(data, "Warning: SSL: Keychain is preferred over CA file");
-
           if(pri_config->pinned_key)
             if(!apnw_pin_peer_key(data, trust, pri_config->pinned_key)) {
               failf(data, "Failed to pin peer public key");
@@ -444,6 +688,9 @@ static CURLcode apnw_create_parameters(struct Curl_cfilter *cf,
               sec_release(trust);
               return;
             }
+
+          verify_cert(cf, data, pri_config->CAfile, pri_config->cert_blob,
+                      trust);
 
           if(SecTrustEvaluateWithError(trust, NULL))
             complete(true);

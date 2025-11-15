@@ -31,6 +31,7 @@
 #include "curl_base64.h"
 #include "curl_printf.h"
 #include "curl_trc.h"
+#include "select.h"
 
 #include <Network/Network.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -137,8 +138,6 @@ static CURLcode append_cert_to_array(struct Curl_easy *data,
                                      const unsigned char *buf, size_t buflen,
                                      CFMutableArrayRef array)
 {
-  char *certp;
-  CURLcode result;
   SecCertificateRef cacert;
   CFDataRef certdata;
 
@@ -211,7 +210,7 @@ static CURLcode verify_cert_buf(struct Curl_cfilter *cf,
       /* This is not a PEM file, probably a certificate in DER format. */
       rc = append_cert_to_array(data, certbuf, buflen, array);
       if(rc != CURLE_OK) {
-        CURL_TRC_CF(data, cf, "append_cert for CA failed");
+        /* CURL_TRC_CF(data, cf, "append_cert for CA failed");*/
         result = rc;
         goto out;
       }
@@ -225,7 +224,7 @@ static CURLcode verify_cert_buf(struct Curl_cfilter *cf,
     rc = append_cert_to_array(data, der, derlen, array);
     /* free(der); */
     if(rc != CURLE_OK) {
-      CURL_TRC_CF(data, cf, "append_cert for CA failed");
+      /* CURL_TRC_CF(data, cf, "append_cert for CA failed");*/
       result = rc;
       goto out;
     }
@@ -241,7 +240,7 @@ static CURLcode verify_cert_buf(struct Curl_cfilter *cf,
     goto out;
   }
 
-  CURL_TRC_CF(data, cf, "setting %d trust anchors", n);
+  /* CURL_TRC_CF(data, cf, "setting %d trust anchors", n);*/
   ret = SecTrustSetAnchorCertificates(trust, array);
   if(ret != noErr) {
     failf(data, "SecTrustSetAnchorCertificates() returned error %d", ret);
@@ -272,12 +271,12 @@ static CURLcode verify_cert(struct Curl_cfilter *cf, struct Curl_easy *data,
   bool free_certbuf = FALSE;
 
   if(ca_info_blob) {
-    CURL_TRC_CF(data, cf, "verify_peer, CA from config blob");
+    /* CURL_TRC_CF(data, cf, "verify_peer, CA from config blob");*/
     certbuf = ca_info_blob->data;
     buflen = ca_info_blob->len;
   }
   else if(cafile) {
-    CURL_TRC_CF(data, cf, "verify_peer, CA from file '%s'", cafile);
+    /* CURL_TRC_CF(data, cf, "verify_peer, CA from file '%s'", cafile); */
     if(read_cert(cafile, &certbuf, &buflen) < 0) {
       failf(data, "SSL: failed to read or invalid CA certificate");
       return CURLE_SSL_CACERT_BADFILE;
@@ -288,8 +287,8 @@ static CURLcode verify_cert(struct Curl_cfilter *cf, struct Curl_easy *data,
     return CURLE_SSL_CACERT_BADFILE;
 
   result = verify_cert_buf(cf, data, certbuf, buflen, trust);
-  /* if(free_certbuf)
-    free(certbuf); */
+  if(free_certbuf)
+    free(certbuf);
   return result;
 }
 
@@ -571,147 +570,209 @@ static CURLcode apnw_create_endpoint(struct Curl_easy *data,
                                      struct Curl_cfilter *cf,
                                      nw_endpoint_t *endpoint)
 {
-  curl_socket_t socket = Curl_conn_cf_get_socket(cf, data);
-
-  struct sockaddr_storage addr;
-  socklen_t addr_len = sizeof(addr);
-
-  if(getpeername(socket, (struct sockaddr *)&addr, &addr_len) == -1) {
-    failf(data, "Failed to get peer address: %d", errno);
-    return CURLE_COULDNT_RESOLVE_HOST;
-  }
-
-  *endpoint = nw_endpoint_create_address((struct sockaddr *)&addr);
+  *endpoint = nw_endpoint_create_host("0.0.0.0", "0");
   if(!*endpoint) {
     failf(data, "Failed to create endpoint");
     return CURLE_FAILED_INIT;
   }
 
+  (void)cf;
   return CURLE_OK;
 }
 
-static CURLcode apnw_create_parameters(struct Curl_cfilter *cf,
-                                       struct Curl_easy *data,
-                                       nw_parameters_t *parameters)
+static nw_protocol_options_t apnw_create_tls_options(struct Curl_cfilter *cf,
+                                                     struct Curl_easy *data)
 {
   struct ssl_connect_data *connssl = cf->ctx;
   struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
   struct ssl_primary_config *pri_config = Curl_ssl_cf_get_primary_config(cf);
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
 
-  *parameters = nw_parameters_create_secure_tcp(
-    ^(nw_protocol_options_t tls_options) {
-      sec_protocol_options_t sec_options =
-        nw_tls_copy_sec_protocol_options(tls_options);
+  nw_protocol_options_t tls_options = nw_tls_create_options();
+  sec_protocol_options_t sec_options =
+    nw_tls_copy_sec_protocol_options(tls_options);
 
-      if(connssl->alpn) {
-        size_t i;
-        for(i = 0; i < connssl->alpn->count; ++i) {
-          sec_protocol_options_add_tls_application_protocol(
-            sec_options, connssl->alpn->entries[i]);
+  if(connssl->alpn) {
+    size_t i;
+    for(i = 0; i < connssl->alpn->count; ++i) {
+      sec_protocol_options_add_tls_application_protocol(
+        sec_options, connssl->alpn->entries[i]);
+    }
+  }
+
+  if(pri_config->cipher_list13) {
+    apnw_set_cipher_list(data, pri_config->cipher_list13, sec_options);
+  }
+
+  if(pri_config->cipher_list) {
+    apnw_set_cipher_list(data, pri_config->cipher_list, sec_options);
+  }
+
+  apnw_set_min_tls_version(sec_options, pri_config->version);
+
+  apnw_set_max_tls_version(sec_options, pri_config->version_max);
+
+  sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
+
+  sec_protocol_options_set_tls_false_start_enabled(sec_options,
+                                                   ssl_config->falsestart);
+
+  sec_protocol_options_set_verify_block(
+    sec_options,
+    ^(sec_protocol_metadata_t metadata, sec_trust_t trust_ref,
+      sec_protocol_verify_complete_t complete) {
+      SecTrustRef trust = sec_trust_copy_ref(trust_ref);
+
+      CFIndex cn = SecTrustGetCertificateCount(trust);
+      CFIndex ci;
+
+      (void)metadata;
+
+      if(ssl_config->certinfo) {
+        Curl_ssl_init_certinfo(data, (int)cn);
+      }
+
+      for(ci = 0; ci < cn; ++ci) {
+        SecCertificateRef cert = apnw_get_cert(trust, ci);
+
+        CFStringRef sub = SecCertificateCopyLongDescription(NULL, cert, NULL);
+        const char *str = CFStringGetCStringPtr(sub, kCFStringEncodingUTF8);
+
+        if(str)
+          /* infof(data, "Server certificate: %s", str); */
+        if(sub)
+          CFRelease(sub);
+
+        if(ssl_config->certinfo) {
+          CURLcode result;
+          const char *beg;
+          const char *end;
+          CFDataRef der = SecCertificateCopyData(cert);
+
+          if(!der) {
+            infof(data, "Failed to get certificate data");
+            break;
+          }
+
+          beg = (const char *)CFDataGetBytePtr(der);
+          end = beg + CFDataGetLength(der);
+
+          result = Curl_extract_certinfo(data, (int)ci, beg, end);
+          CFRelease(der);
+
+          if(result != CURLE_OK) {
+            infof(data, "Failed to extract certificate information");
+            break;
+          }
         }
       }
 
-      if(pri_config->cipher_list13) {
-        apnw_set_cipher_list(data, pri_config->cipher_list13, sec_options);
-      }
-
-      if(pri_config->cipher_list) {
-        apnw_set_cipher_list(data, pri_config->cipher_list, sec_options);
-      }
-
-      apnw_set_min_tls_version(sec_options, pri_config->version);
-
-      apnw_set_max_tls_version(sec_options, pri_config->version_max);
-
-      sec_protocol_options_set_tls_server_name(sec_options, connssl->peer.sni);
-
-      sec_protocol_options_set_tls_false_start_enabled(sec_options,
-                                                       ssl_config->falsestart);
-
-      sec_protocol_options_set_verify_block(
-        sec_options,
-        ^(sec_protocol_metadata_t metadata, sec_trust_t trust_ref,
-          sec_protocol_verify_complete_t complete) {
-          SecTrustRef trust = sec_trust_copy_ref(trust_ref);
-
-          CFIndex cn = SecTrustGetCertificateCount(trust);
-          CFIndex ci;
-
-          (void)metadata;
-
-          if(ssl_config->certinfo) {
-            Curl_ssl_init_certinfo(data, (int)cn);
-          }
-
-          for(ci = 0; ci < cn; ++ci) {
-            SecCertificateRef cert = apnw_get_cert(trust, ci);
-
-            CFStringRef sub =
-              SecCertificateCopyLongDescription(NULL, cert, NULL);
-            const char *str =
-              CFStringGetCStringPtr(sub, kCFStringEncodingUTF8);
-
-            if(str)
-              infof(data, "Server certificate: %s", str);
-            if(sub)
-              CFRelease(sub);
-
-            if(ssl_config->certinfo) {
-              CURLcode result;
-              const char *beg;
-              const char *end;
-              CFDataRef der = SecCertificateCopyData(cert);
-
-              if(!der) {
-                infof(data, "Failed to get certificate data");
-                break;
-              }
-
-              beg = (const char *)CFDataGetBytePtr(der);
-              end = beg + CFDataGetLength(der);
-
-              result = Curl_extract_certinfo(data, (int)ci, beg, end);
-              CFRelease(der);
-
-              if(result != CURLE_OK) {
-                infof(data, "Failed to extract certificate information");
-                break;
-              }
-            }
-          }
-
-          if(pri_config->pinned_key)
-            if(!apnw_pin_peer_key(data, trust, pri_config->pinned_key)) {
-              failf(data, "Failed to pin peer public key");
-              complete(false);
-              sec_release(trust);
-              return;
-            }
-
-          verify_cert(cf, data, pri_config->CAfile, pri_config->cert_blob,
-                      trust);
-
-          if(SecTrustEvaluateWithError(trust, NULL))
-            complete(true);
-          else {
-            failf(data, "Failed to verify peer certificate");
-            complete(!pri_config->verifypeer);
-          }
-
+      if(pri_config->pinned_key)
+        if(!apnw_pin_peer_key(data, trust, pri_config->pinned_key)) {
+          failf(data, "Failed to pin peer public key");
+          complete(false);
           sec_release(trust);
-        },
-        backend->queue);
+          return;
+        }
 
-      nw_release(sec_options);
+      verify_cert(cf, data, pri_config->CAfile, pri_config->cert_blob, trust);
+
+      if(SecTrustEvaluateWithError(trust, NULL))
+        complete(true);
+      else {
+        failf(data, "Failed to verify peer certificate");
+        complete(!pri_config->verifypeer);
+      }
+
+      sec_release(trust);
     },
-    NW_PARAMETERS_DEFAULT_CONFIGURATION);
-  if(!parameters) {
-    failf(data, "Failed to create parameters");
-    return CURLE_FAILED_INIT;
-  }
+    backend->queue);
 
-  return CURLE_OK;
+  nw_release(sec_options);
+  return tls_options;
+}
+
+static nw_protocol_options_t apnw_create_curl_options(struct Curl_cfilter *cf,
+                                                      struct Curl_easy *data)
+{
+  const nw_protocol_definition_t def = nw_framer_create_definition(
+    "curl", NW_FRAMER_CREATE_FLAGS_DEFAULT,
+    ^nw_framer_start_result_t(nw_framer_t framer) {
+      nw_framer_set_output_handler(
+        framer, ^(nw_framer_t framer1, nw_framer_message_t message,
+                  size_t message_length, bool is_complete) {
+          uint8_t *temp_buffer = malloc(message_length * sizeof(uint8_t));
+          nw_framer_parse_output(
+            framer1, message_length, message_length, temp_buffer,
+            ^size_t(uint8_t *buf, size_t len, bool eos) {
+              ssize_t nwritten;
+              CURLcode result;
+
+              DEBUGASSERT(data);
+              nwritten =
+                Curl_conn_cf_send(cf->next, data, buf, len, FALSE, &result);
+              /*
+              CURL_TRC_CF(data, cf, "bio_send(len=%zu) -> %zu, result=%d", len,
+                          nwritten, result);
+                          */
+              return message_length;
+            });
+          (void)message;
+          (void)is_complete;
+        });
+
+      nw_framer_set_wakeup_handler(framer, ^(nw_framer_t framer1) {
+        curl_socket_t sockfd;
+        int fdr;
+        ssize_t nread;
+        CURLcode result;
+        nw_framer_message_t msg;
+        static char buf[BUFSIZ];
+
+        DEBUGASSERT(data);
+        sockfd = Curl_conn_cf_get_socket(cf->next, data);
+        fdr =
+          Curl_socket_check(sockfd, CURL_SOCKET_BAD, CURL_SOCKET_BAD, 100L);
+        /* CURL_TRC_CF(data, cf, "bio_read wakeup, socket=%d, fdr=%d", sockfd,
+                    fdr);*/
+
+        nread = Curl_conn_cf_recv(cf->next, data, buf, BUFSIZ, &result);
+        /* CURL_TRC_CF(data, cf, "bio_read(len=%zu) -> %zd, result=%d", BUFSIZ,
+                    nread, result);*/
+
+        if(result == CURLE_OK) {
+          if(nread > 0) {
+            msg = nw_framer_message_create(framer1);
+            nw_framer_deliver_input(framer1, (uint8_t *)buf, nread, msg,
+                                    FALSE);
+            nw_release(msg);
+          }
+          nw_framer_schedule_wakeup(framer1, 1);
+        }
+        else if(result == CURLE_AGAIN) {
+          nw_framer_schedule_wakeup(framer1, 10);
+        }
+        else {
+          nw_framer_mark_failed_with_error(framer1, result);
+        }
+      });
+
+      nw_framer_async(framer, ^(void) {
+        nw_framer_schedule_wakeup(framer, 10);
+      });
+
+      nw_framer_set_input_handler(framer,
+                                  ^size_t(nw_framer_t framer1 UNUSED_PARAM) {
+                                    return 0;
+                                  });
+
+      return nw_framer_start_result_ready;
+    });
+
+  const nw_protocol_options_t curl_opts = nw_framer_create_options(def);
+
+  nw_release(def);
+  return curl_opts;
 }
 
 static dispatch_time_t apnw_get_timeout(struct Curl_easy *data)
@@ -735,7 +796,7 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
   const char *alpn;
 
   desc = nw_connection_copy_description(conn);
-  infof(data, "%s", desc);
+  /* infof(data, "%s", desc);*/
   free(desc);
 
   tls_meta = nw_connection_copy_protocol_metadata(conn, tls);
@@ -743,7 +804,7 @@ static void apnw_connect_ready(struct Curl_cfilter *cf, struct Curl_easy *data)
 
   tls_str = apnw_get_tls_version_str(sec_meta);
   apnw_copy_cipher_suite_str(sec_meta, cipher_str, 64);
-  infof(data, "SSL connection using %s / %s", tls_str, cipher_str);
+  /* infof(data, "SSL connection using %s / %s", tls_str, cipher_str); */
 
   alpn = sec_protocol_metadata_get_negotiated_protocol(sec_meta);
   if(alpn)
@@ -765,7 +826,8 @@ static CURLcode apnw_connect_common(struct Curl_cfilter *cf,
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
 
   nw_endpoint_t endpoint;
-  nw_parameters_t parameters;
+  nw_protocol_stack_t stack;
+  nw_parameters_t parameters = nw_parameters_create();
   dispatch_group_t group = dispatch_group_create();
 
   result = apnw_create_endpoint(data, cf, &endpoint);
@@ -775,11 +837,13 @@ static CURLcode apnw_connect_common(struct Curl_cfilter *cf,
 
   backend->queue = dispatch_queue_create("curl.vtls.applenw", NULL);
 
-  result = apnw_create_parameters(cf, data, &parameters);
-  if(result != CURLE_OK) {
-    nw_release(endpoint);
-    return result;
-  }
+  stack = nw_parameters_copy_default_protocol_stack(parameters);
+  nw_protocol_stack_set_transport_protocol(stack, nw_udp_create_options());
+  nw_protocol_stack_prepend_application_protocol(
+    stack, apnw_create_curl_options(cf, data));
+  nw_protocol_stack_prepend_application_protocol(
+    stack, apnw_create_tls_options(cf, data));
+  nw_release(stack);
 
   backend->connection = nw_connection_create(endpoint, parameters);
   nw_release(endpoint);
@@ -796,21 +860,21 @@ static CURLcode apnw_connect_common(struct Curl_cfilter *cf,
   nw_connection_set_state_changed_handler(
     backend->connection, ^(nw_connection_state_t state, nw_error_t error) {
       if(error) {
-        failf(data, "Failed to connect: %d", nw_error_get_error_code(error));
+        failf(data, "Failed to connect: %d (%d)",
+              nw_error_get_error_domain(error),
+              nw_error_get_error_code(error));
       }
 
       if(state == nw_connection_state_waiting) {
-        DEBUGF(infof(data, "CONN: waiting for a usable network"));
+          /* */
       }
       else if(state == nw_connection_state_failed) {
-        DEBUGF(infof(data, "CONN: irrecoverably closed or failed"));
+          /* */
       }
       else if(state == nw_connection_state_ready) {
-        DEBUGF(infof(data, "CONN: ready to send and receive data"));
         apnw_connect_ready(cf, data);
       }
       else if(state == nw_connection_state_cancelled) {
-        DEBUGF(infof(data, "CONN: cancelled by the caller"));
         nw_release(backend->connection);
       }
 
@@ -881,7 +945,7 @@ static void apnw_close(struct Curl_cfilter *cf, struct Curl_easy *data)
   struct ssl_connect_data *connssl = cf->ctx;
   struct nw_ssl_backend_data *backend = apnw_get_backend(connssl);
 
-  DEBUGF(infof(data, "Closing APNW connection"));
+  /* DEBUGF(infof(data, "Closing APNW connection"));*/
 
   if(backend->connection) {
     nw_release(backend->connection);
@@ -909,9 +973,6 @@ static ssize_t apnw_recv_plain(struct Curl_cfilter *cf, struct Curl_easy *data,
     ^(dispatch_data_t content, nw_content_context_t context, bool is_complete,
       nw_error_t error) {
       if(error) {
-        failf(data, "Failed to receive data: %d (%d)",
-              nw_error_get_error_domain(error),
-              nw_error_get_error_code(error));
         *code = CURLE_RECV_ERROR;
         dispatch_group_leave(group);
         return;
@@ -919,7 +980,7 @@ static ssize_t apnw_recv_plain(struct Curl_cfilter *cf, struct Curl_easy *data,
       *code = CURLE_OK;
 
       if(!context || !content) {
-        CURL_TRC_CF(data, cf, "Received no content");
+        /* CURL_TRC_CF(data, cf, "Received no content");*/
         dispatch_group_leave(group);
         return;
       }
@@ -942,7 +1003,7 @@ static ssize_t apnw_recv_plain(struct Curl_cfilter *cf, struct Curl_easy *data,
       });
 
       if(is_complete || nw_content_context_get_is_final(context)) {
-        CURL_TRC_CF(data, cf, "Received complete content");
+        /* CURL_TRC_CF(data, cf, "Received complete content"); */
       }
 
       dispatch_group_leave(group);

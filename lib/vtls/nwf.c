@@ -52,11 +52,6 @@
 
 #define DEFAULT_RECEIVE_SIZE 4096
 
-#if defined(__GNUC__) && defined(__APPLE__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 #ifdef USE_ECH
 #define ECH_ENABLED(__data__) \
     (__data__->set.tls_ech && \
@@ -76,12 +71,8 @@ struct nwf_ssl_backend_data {
   bool done_receiving;
   dispatch_data_t recv_data;
   CURLcode error;
-  nw_connection_state_t state;
-  int signal_pipe[2];
   bool write_outstanding;
   bool read_outstanding;
-  struct Curl_sockaddr_ex remote_addr;
-  unsigned char alpn;
 };
 
 static dispatch_queue_t nwf_queue;
@@ -146,6 +137,10 @@ nwf_set_ssl_version_min_max(struct Curl_easy *data,
     case CURL_SSLVERSION_DEFAULT:
       ver_min = sec_protocol_options_get_default_min_tls_protocol_version();
       break;
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     case CURL_SSLVERSION_TLSv1:
     case CURL_SSLVERSION_TLSv1_0:
       ver_min = tls_protocol_version_TLSv10;
@@ -153,6 +148,9 @@ nwf_set_ssl_version_min_max(struct Curl_easy *data,
     case CURL_SSLVERSION_TLSv1_1:
       ver_min = tls_protocol_version_TLSv11;
       break;
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic pop
+#endif
     case CURL_SSLVERSION_TLSv1_2:
       ver_min = tls_protocol_version_TLSv12;
       break;
@@ -175,6 +173,10 @@ nwf_set_ssl_version_min_max(struct Curl_easy *data,
     case CURL_SSLVERSION_MAX_TLSv1_2:
       ver_max = tls_protocol_version_TLSv12;
       break;
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     case CURL_SSLVERSION_MAX_TLSv1_1:
       ver_max = tls_protocol_version_TLSv11;
       break;
@@ -182,6 +184,9 @@ nwf_set_ssl_version_min_max(struct Curl_easy *data,
     case CURL_SSLVERSION_TLSv1:
       ver_max = tls_protocol_version_TLSv10;
       break;
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic pop
+#endif
     default:
       failf(data, "SSL: unsupported maximum TLS version value");
       return CURLE_SSL_CONNECT_ERROR;
@@ -243,30 +248,6 @@ static size_t nwf_version(char *buffer, size_t size)
 out:
   CFRelease(bundle);
   return len;
-}
-
-static void nwf_drain_wakeup(struct nwf_ssl_backend_data *backend)
-{
-  char buf[64];
-  ssize_t nread;
-  while(1) {
-    /* the reading socket is non-blocking, try to read
-       data from it until it receives an error (except EINTR).
-       In normal cases it will get EAGAIN or EWOULDBLOCK
-       when there is no more data, breaking the loop. */
-    nread = wakeup_read(backend->signal_pipe[0], buf, sizeof(buf));
-    if(nread <= 0) {
-      if(nread < 0 && SOCKEINTR == SOCKERRNO)
-        continue;
-      break;
-    }
-  }
-}
-
-static void nwf_signal(struct nwf_ssl_backend_data *backend)
-{
-    char buf[1] = {0};
-    wakeup_write(backend->signal_pipe[1], buf, sizeof(buf));
 }
 
 static nw_protocol_options_t nwf_curl_create_options(struct Curl_cfilter *cf,
@@ -360,12 +341,6 @@ static CURLcode nwf_connect_start(struct Curl_cfilter *cf,
 #ifdef USE_ECH
   bool ech_on;
 #endif
-
-  backend->signal_pipe[0] = backend->signal_pipe[1] = CURL_SOCKET_BAD;
-  if(wakeup_create(backend->signal_pipe, true) < 0) {
-    return CURLE_SSL_CONNECT_ERROR;
-  }
-  data->conn->sockfd = backend->signal_pipe[0];
 
   backend->error = CURLE_OK;
   backend->queue = nwf_queue;
@@ -469,14 +444,16 @@ static CURLcode nwf_connect_start(struct Curl_cfilter *cf,
         }
       }
 #endif /* APPLE_PINNEDPUBKEY */
-
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
       alpn = sec_protocol_metadata_get_negotiated_protocol(metadata);
-      if(alpn && !strcmp(alpn, ALPN_H2)) {
-        backend->alpn = CURL_HTTP_VERSION_2;
-      }
-      else if(alpn && !strcmp(alpn, ALPN_HTTP_1_1)) {
-        backend->alpn = CURL_HTTP_VERSION_1_1;
-      }
+#if defined(__GNUC__) && defined(__APPLE__)
+#pragma GCC diagnostic pop
+#endif
+      Curl_alpn_set_negotiated(cf, data, connssl, (const unsigned char *)alpn,
+                               alpn ? strlen(alpn) : 0);
 
       sec_release(trust_ref);
 
@@ -519,7 +496,6 @@ static CURLcode nwf_connect_start(struct Curl_cfilter *cf,
     if(error && !backend->error) {
       backend->error = nwf_code_from_error(error, CURLE_RECV_ERROR);
     }
-    backend->state = state;
 
     switch(state) {
       case nw_connection_state_preparing:
@@ -535,7 +511,6 @@ static CURLcode nwf_connect_start(struct Curl_cfilter *cf,
         backend->done_connecting = true;
         connssl->connecting_state = ssl_connect_done;
         connssl->state = ssl_connection_complete;
-        nwf_signal(backend);
         break;
     }
   };
@@ -564,7 +539,6 @@ static void nwf_try_receive(struct nwf_ssl_backend_data *backend, uint32_t len)
         backend->done_receiving = true;
     }
     backend->read_outstanding = false;
-    nwf_signal(backend);
   };
 
   if(!backend->done_receiving
@@ -591,16 +565,7 @@ static CURLcode nwf_connect(struct Curl_cfilter *cf,
   }
 
   if(backend->done_connecting) {
-    if(backend->alpn) {
-      cf->conn->alpn = backend->alpn;
-    }
-    else {
-      infof(data, VTLS_INFOF_NO_ALPN);
-    }
-
     *done = true;
-
-    nwf_try_receive(backend, DEFAULT_RECEIVE_SIZE);
   }
 
   return backend->error;
@@ -616,7 +581,6 @@ static ssize_t nwf_send(struct Curl_cfilter *cf,
   dispatch_data_t dispatch_data;
   nw_connection_send_completion_t completion;
 
-  nwf_drain_wakeup(backend);
   *code = CURLE_OK;
 
   dispatch_sync(backend->queue, ^{
@@ -640,7 +604,6 @@ static ssize_t nwf_send(struct Curl_cfilter *cf,
       backend->error = nwf_code_from_error(error, CURLE_SEND_ERROR);
     }
     backend->write_outstanding = false;
-    nwf_signal(backend);
   };
   nw_connection_send(backend->connection, dispatch_data,
                      NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true, completion);
@@ -679,8 +642,6 @@ static ssize_t nwf_recv(struct Curl_cfilter *cf,
   dispatch_block_t block;
   __block size_t size;
   *err = CURLE_OK;
-
-  nwf_drain_wakeup(backend);
 
   block = ^{
     if(backend->recv_data) {
@@ -735,8 +696,6 @@ static CURLcode nwf_shutdown(struct Curl_cfilter *cf,
   nw_connection_state_changed_handler_t handler;
   CURLcode result;
 
-  nwf_drain_wakeup(backend);
-
   result = CURLE_OK;
 
   if(backend->connection) {
@@ -745,7 +704,6 @@ static CURLcode nwf_shutdown(struct Curl_cfilter *cf,
       if(error) {
         backend->error = nwf_code_from_error(error, CURLE_RECV_ERROR);
       }
-      backend->state = state;
       switch(state) {
         case nw_connection_state_cancelled:
           *done = true;
@@ -796,16 +754,6 @@ static void nwf_close(struct Curl_cfilter *cf,
     backend->recv_data = NULL;
   }
 
-  if(backend->signal_pipe[0] == cf->conn->sock[cf->sockindex])
-    cf->conn->sock[cf->sockindex] = CURL_SOCKET_BAD;
-  if(cf->sockindex == FIRSTSOCKET)
-    cf->conn->remote_addr = NULL;
-
-  Curl_multi_will_close(data, backend->signal_pipe[0]);
-  wakeup_close(backend->signal_pipe[0]);
-  wakeup_close(backend->signal_pipe[1]);
-  backend->signal_pipe[0] = backend->signal_pipe[1] = CURL_SOCKET_BAD;
-
   cf->connected = FALSE;
 }
 
@@ -822,25 +770,6 @@ static bool nwf_data_pending(struct Curl_cfilter *cf,
   });
 
   return pending;
-}
-
-static bool nwf_is_alive(struct Curl_cfilter *cf,
-                         struct Curl_easy *data UNUSED_PARAM,
-                         bool *input_pending)
-{
-  struct ssl_connect_data *connssl = cf->ctx;
-  struct nwf_ssl_backend_data *backend =
-    (struct nwf_ssl_backend_data *)connssl->backend;
-  __block bool ret = FALSE;
-
-  dispatch_sync(backend->queue, ^{
-    *input_pending = backend->recv_data != NULL;
-    ret = backend->state == nw_connection_state_ready
-      || backend->state == nw_connection_state_waiting
-      || backend->state == nw_connection_state_preparing;
-  });
-
-  return ret;
 }
 
 const struct Curl_ssl Curl_ssl_nwf = {
@@ -882,7 +811,7 @@ const struct Curl_ssl Curl_ssl_nwf = {
   nwf_send,                /* send_plain */
   NULL,                    /* get_channel_binding */
   NULL,                    /* cntrl */
-  nwf_is_alive,            /* is_alive */
+  NULL,                    /* is_alive */
 };
 
 #endif /* USE_NWF */
